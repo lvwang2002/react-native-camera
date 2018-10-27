@@ -3,17 +3,28 @@ package org.reactnative.camera;
 import android.Manifest;
 import android.annotation.SuppressLint;
 import android.content.pm.PackageManager;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Color;
+import android.graphics.ImageFormat;
+import android.graphics.Rect;
+import android.graphics.YuvImage;
+import android.hardware.Camera;
 import android.media.CamcorderProfile;
+import android.media.FaceDetector;
 import android.media.MediaActionSound;
 import android.os.Build;
 import android.support.v4.content.ContextCompat;
+import android.util.Log;
 import android.util.SparseArray;
 import android.view.View;
 import android.os.AsyncTask;
 import com.facebook.react.bridge.*;
+import com.facebook.react.modules.core.DeviceEventManagerModule;
 import com.facebook.react.uimanager.ThemedReactContext;
+import com.facebook.react.uimanager.UIManagerModule;
 import com.google.android.cameraview.CameraView;
+import com.google.android.cameraview.Size;
 import com.google.android.gms.vision.barcode.Barcode;
 import com.google.android.gms.vision.face.Face;
 import com.google.android.gms.vision.text.TextBlock;
@@ -26,6 +37,7 @@ import org.reactnative.barcodedetector.RNBarcodeDetector;
 import org.reactnative.camera.tasks.*;
 import org.reactnative.camera.utils.ImageDimensions;
 import org.reactnative.camera.utils.RNFileUtils;
+import org.reactnative.camera.utils.YuvUtil;
 import org.reactnative.facedetector.RNFaceDetector;
 
 import java.io.File;
@@ -66,6 +78,7 @@ public class RNCameraView extends CameraView implements LifecycleEventListener, 
   private int mFaceDetectionLandmarks = RNFaceDetector.NO_LANDMARKS;
   private int mFaceDetectionClassifications = RNFaceDetector.NO_CLASSIFICATIONS;
   private int mGoogleVisionBarCodeType = Barcode.ALL_FORMATS;
+  private Long lastPreviewTime = 0L;
 
   public RNCameraView(ThemedReactContext themedReactContext) {
     super(themedReactContext, true);
@@ -115,44 +128,59 @@ public class RNCameraView extends CameraView implements LifecycleEventListener, 
         }
       }
 
+      static final int MAX_FACE_NUM = 5;
+      int realFaceNum;
+      FaceDetector faceDetector;
+      FaceDetector.Face[] faces;
+      int findFaceTime = 0;
+
+      int testFace(Bitmap bitmap) {
+        // 首先将得到的bitmap做一次转化：
+        bitmap = bitmap.copy(Bitmap.Config.RGB_565, true);
+        //然后进行判断
+        faceDetector = new FaceDetector(bitmap.getWidth(), bitmap.getHeight(), MAX_FACE_NUM);
+        faces = new FaceDetector.Face[MAX_FACE_NUM];
+        realFaceNum = faceDetector.findFaces(bitmap, faces);
+        return realFaceNum;
+      }
+
       @Override
-      public void onFramePreview(CameraView cameraView, byte[] data, int width, int height, int rotation) {
-        // int correctRotation = RNCameraViewHelper.getCorrectCameraRotation(rotation, getFacing());
-        // boolean willCallBarCodeTask = mShouldScanBarCodes && !barCodeScannerTaskLock && cameraView instanceof BarCodeScannerAsyncTaskDelegate;
-        // boolean willCallFaceTask = mShouldDetectFaces && !faceDetectorTaskLock && cameraView instanceof FaceDetectorAsyncTaskDelegate;
-        // boolean willCallGoogleBarcodeTask = mShouldGoogleDetectBarcodes && !googleBarcodeDetectorTaskLock && cameraView instanceof BarcodeDetectorAsyncTaskDelegate;
-        // boolean willCallTextTask = mShouldRecognizeText && !textRecognizerTaskLock && cameraView instanceof TextRecognizerAsyncTaskDelegate;
-        // if (!willCallBarCodeTask && !willCallFaceTask && !willCallGoogleBarcodeTask && !willCallTextTask) {
-        //   return;
-        // }
+      public void onFramePreview(final CameraView cameraView,final byte[] data, int width, int height, int rotation) {
+         if (data.length < (1.5 * width * height)) {
+             return;
+         }
 
-        // if (data.length < (1.5 * width * height)) {
-        //     return;
-        // }
+        if(System.currentTimeMillis()-lastPreviewTime>300){
+          lastPreviewTime=System.currentTimeMillis();
+          Thread thread = new Thread() {
+            @Override
+            public void run() {
+              Size size = cameraView.getPreviewSize();
+              int width = size.getWidth();
+              int height = size.getHeight();
+              Bitmap bmp = YuvUtil.rawByteArray2RGBABitmap2(YuvUtil.rotateYUV420Degree270(data, width, height), height, width);
+              int faceNumber = testFace(bmp);
+//              Log.d("RNCamera","face number:"+faceNumber);
+              if(faceNumber>0){
+                findFaceTime = findFaceTime+1;
+              }else{
+                findFaceTime = 0;
+              }
 
-        // if (willCallBarCodeTask) {
-        //   barCodeScannerTaskLock = true;
-        //   BarCodeScannerAsyncTaskDelegate delegate = (BarCodeScannerAsyncTaskDelegate) cameraView;
-        //   new BarCodeScannerAsyncTask(delegate, mMultiFormatReader, data, width, height).execute();
-        // }
+              if(findFaceTime>=3){
+                Log.d("RNCamera","find face");
 
-        // if (willCallFaceTask) {
-        //   faceDetectorTaskLock = true;
-        //   FaceDetectorAsyncTaskDelegate delegate = (FaceDetectorAsyncTaskDelegate) cameraView;
-        //   new FaceDetectorAsyncTask(delegate, mFaceDetector, data, width, height, correctRotation).execute();
-        // }
-
-        // if (willCallGoogleBarcodeTask) {
-        //   googleBarcodeDetectorTaskLock = true;
-        //   BarcodeDetectorAsyncTaskDelegate delegate = (BarcodeDetectorAsyncTaskDelegate) cameraView;
-        //   new BarcodeDetectorAsyncTask(delegate, mGoogleBarcodeDetector, data, width, height, correctRotation).execute();
-        // }
-
-        // if (willCallTextTask) {
-        //   textRecognizerTaskLock = true;
-        //   TextRecognizerAsyncTaskDelegate delegate = (TextRecognizerAsyncTaskDelegate) cameraView;
-        //   new TextRecognizerAsyncTask(delegate, mTextRecognizer, data, width, height, correctRotation).execute();
-        // }
+                //发送消息
+                findFaceTime = 0;
+                ReactContext reactContext = (ReactContext) cameraView.getContext();
+                WritableMap map = Arguments.createMap();
+                reactContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
+                        .emit("FIND_FACE", map);
+              }
+            }
+          };
+          thread.start();
+        }
       }
     });
   }

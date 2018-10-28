@@ -1,4 +1,4 @@
-package robot.kj.com.utils;
+package org.reactnative.camera.utils;
 
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;

@@ -7,6 +7,7 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.ImageFormat;
+import android.graphics.Matrix;
 import android.graphics.Rect;
 import android.graphics.YuvImage;
 import android.hardware.Camera;
@@ -14,7 +15,15 @@ import android.media.CamcorderProfile;
 import android.media.FaceDetector;
 import android.media.MediaActionSound;
 import android.os.Build;
+import android.os.Environment;
+import android.renderscript.Allocation;
+import android.renderscript.Element;
+import android.renderscript.RenderScript;
+import android.renderscript.ScriptIntrinsicYuvToRGB;
+import android.renderscript.Type;
 import android.support.v4.content.ContextCompat;
+
+
 import android.util.Log;
 import android.util.SparseArray;
 import android.view.View;
@@ -41,10 +50,15 @@ import org.reactnative.camera.utils.YuvUtil;
 import org.reactnative.facedetector.RNFaceDetector;
 
 import java.io.File;
+import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
+
+import static java.lang.System.in;
+import static java.lang.System.out;
 
 public class RNCameraView extends CameraView implements LifecycleEventListener, BarCodeScannerAsyncTaskDelegate, FaceDetectorAsyncTaskDelegate,
     BarcodeDetectorAsyncTaskDelegate, TextRecognizerAsyncTaskDelegate, PictureSavedDelegate {
@@ -84,6 +98,9 @@ public class RNCameraView extends CameraView implements LifecycleEventListener, 
     super(themedReactContext, true);
     mThemedReactContext = themedReactContext;
     themedReactContext.addLifecycleEventListener(this);
+
+    rs = RenderScript.create(mThemedReactContext);
+    yuvToRgbIntrinsic = ScriptIntrinsicYuvToRGB.create(rs, Element.U8_4(rs));
 
     addCallback(new Callback() {
       @Override
@@ -145,7 +162,7 @@ public class RNCameraView extends CameraView implements LifecycleEventListener, 
       }
 
       @Override
-      public void onFramePreview(final CameraView cameraView,final byte[] data, int width, int height, int rotation) {
+      public void onFramePreview(final CameraView cameraView, final byte[] data, final int width, final int height, int rotation) {
          if (data.length < (1.5 * width * height)) {
              return;
          }
@@ -155,12 +172,17 @@ public class RNCameraView extends CameraView implements LifecycleEventListener, 
           Thread thread = new Thread() {
             @Override
             public void run() {
-              Size size = cameraView.getPreviewSize();
-              int width = size.getWidth();
-              int height = size.getHeight();
-              Bitmap bmp = YuvUtil.rawByteArray2RGBABitmap2(YuvUtil.rotateYUV420Degree270(data, width, height), height, width);
-              int faceNumber = testFace(bmp);
-//              Log.d("RNCamera","face number:"+faceNumber);
+//              Size size = cameraView.getPreviewSize();
+//              int width = size.getWidth();
+//              int height = size.getHeight();
+//              Bitmap bmp = YuvUtil.rawByteArray2RGBABitmap2(YuvUtil.rotateYUV420Degree270(data, width, height), height, width);
+
+
+              Bitmap bitmap = convertYUVtoRGB(data,width,height);
+              bitmap = rotateBitmap(bitmap,90);
+
+              int faceNumber = testFace(bitmap);
+              Log.d("RNCamera","face number:"+faceNumber);
               if(faceNumber>0){
                 findFaceTime = findFaceTime+1;
               }else{
@@ -177,12 +199,120 @@ public class RNCameraView extends CameraView implements LifecycleEventListener, 
                 reactContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
                         .emit("FIND_FACE", map);
               }
+
+
+              saveImage(100,data,width,height);
             }
           };
           thread.start();
         }
       }
     });
+  }
+
+  private Bitmap rotateBitmap(Bitmap origin, float alpha) {
+    if (origin == null) {
+      return null;
+    }
+    int width = origin.getWidth();
+    int height = origin.getHeight();
+    Matrix matrix = new Matrix();
+    matrix.setRotate(alpha);
+    // 围绕原地进行旋转
+    Bitmap newBM = Bitmap.createBitmap(origin, 0, 0, width, height, matrix, false);
+    if (newBM.equals(origin)) {
+      return newBM;
+    }
+    origin.recycle();
+    return newBM;
+  }
+
+  public void saveImage(int index,final byte[] data,int width,int height) {
+    //保存一张照片
+    String fileName = "IMG_" + String.valueOf(index) + ".jpg";  //jpeg文件名定义
+    File sdRoot = Environment.getExternalStorageDirectory();    //系统路径
+    String dir = "/jpeg/";   //文件夹名
+    File mkDir = new File(sdRoot, dir);
+    if (!mkDir.exists()) {
+      mkDir.mkdirs();   //目录不存在，则创建
+    }
+
+
+    File pictureFile = new File(sdRoot, dir + fileName);
+    if (!pictureFile.exists()) {
+      try {
+        pictureFile.createNewFile();
+
+        FileOutputStream filecon = new FileOutputStream(pictureFile);
+
+//        YuvImage image = new YuvImage(data, ImageFormat.NV21, width, height, null);   //将NV21 data保存成YuvImage
+
+
+//        Bitmap bitmap = YuvUtil.rawByteArray2RGBABitmap2(data, height, width);
+        Bitmap bitmap = convertYUVtoRGB(data,width,height);
+        bitmap = rotateBitmap(bitmap,90);
+
+        if (bitmap.compress(Bitmap.CompressFormat.JPEG, 100, filecon)) {
+
+          filecon.flush();
+          filecon.close();
+        }
+        //图像压缩
+//        image.compressToJpeg(
+//                new Rect(0, 0, image.getWidth(), image.getHeight()),
+//                70, filecon);   // 将NV21格式图片，以质量70压缩成Jpeg，并得到JPEG数据流
+
+      } catch (IOException e) {
+        e.printStackTrace();
+      }
+//      ---------------------
+//              作者：tanmengwen
+//      来源：CSDN
+//      原文：https://blog.csdn.net/tanmengwen/article/details/41412425
+//      版权声明：本文为博主原创文章，转载请附上博文链接！
+    }
+  }
+
+  private RenderScript rs;
+  private ScriptIntrinsicYuvToRGB yuvToRgbIntrinsic;
+  private Type.Builder yuvType, rgbaType;
+  private Allocation in, out;
+
+
+  public Bitmap convertYUVtoRGB(byte[] yuvData, int width, int height) {
+    if (yuvType == null) {
+      yuvType = new Type.Builder(rs, Element.U8(rs)).setX(yuvData.length);
+      in = Allocation.createTyped(rs, yuvType.create(), Allocation.USAGE_SCRIPT);
+
+      rgbaType = new Type.Builder(rs, Element.RGBA_8888(rs)).setX(width).setY(height);
+      out = Allocation.createTyped(rs, rgbaType.create(), Allocation.USAGE_SCRIPT);
+    }
+    in.copyFrom(yuvData);
+    yuvToRgbIntrinsic.setInput(in);
+    yuvToRgbIntrinsic.forEach(out);
+    Bitmap bmpout = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+    out.copyTo(bmpout);
+    return bmpout;
+  }
+
+//  作者：愤怒的桑树
+//  链接：https://www.jianshu.com/p/7436d6ccc7bf
+//  來源：简书
+//  简书著作权归作者所有，任何形式的转载都请联系作者获得授权并注明出处。
+
+  public static void saveJPG_After(Bitmap bitmap, String name) {
+    File file = new File(name);
+    try {
+      FileOutputStream out = new FileOutputStream(file);
+      if (bitmap.compress(Bitmap.CompressFormat.JPEG, 100, out)) {
+        out.flush();
+        out.close();
+      }
+    } catch (FileNotFoundException e) {
+      e.printStackTrace();
+    } catch (IOException e) {
+      e.printStackTrace();
+    }
   }
 
   @Override
@@ -215,6 +345,8 @@ public class RNCameraView extends CameraView implements LifecycleEventListener, 
         correctHeight = (int) height;
       }
     }
+    correctHeight = (int)height;
+    correctWidth = (int)width;
     int paddingX = (int) ((width - correctWidth) / 2);
     int paddingY = (int) ((height - correctHeight) / 2);
     preview.layout(paddingX, paddingY, correctWidth + paddingX, correctHeight + paddingY);

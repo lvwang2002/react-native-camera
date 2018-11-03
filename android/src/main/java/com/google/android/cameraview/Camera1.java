@@ -17,6 +17,9 @@
 package com.google.android.cameraview;
 
 import android.annotation.SuppressLint;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.Matrix;
 import android.graphics.SurfaceTexture;
 import android.hardware.Camera;
 import android.media.CamcorderProfile;
@@ -25,8 +28,11 @@ import android.os.Build;
 import android.support.v4.util.SparseArrayCompat;
 import android.view.SurfaceHolder;
 
+import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
+import java.nio.BufferUnderflowException;
+import java.nio.ByteBuffer;
 import java.util.List;
 import java.util.Set;
 import java.util.SortedSet;
@@ -407,12 +413,62 @@ class Camera1 extends CameraViewImpl implements MediaRecorder.OnInfoListener,
                     camera.cancelAutoFocus();
                     camera.startPreview();
                     mIsPreviewActive = true;
+//                    if(mCameraId==0){
+//                        Bitmap bitmap = toBitmap(data);
+//                        bitmap = rotateBitmap(bitmap,90);
+//
+//                        int size     = bitmap.getRowBytes() * bitmap.getHeight();
+//                        ByteBuffer b = ByteBuffer.allocate(size);
+//
+//                        bitmap.copyPixelsToBuffer(b);
+//
+//                        byte[] bytes = new byte[size];
+//
+//                        try {
+//                            b.get(bytes, 0, bytes.length);
+//                        } catch (BufferUnderflowException e) {
+//                            // always happens
+//                        }
+//
+//                        data = bytes;
+//                    }
+
+
                     if (mIsScanning) {
                         camera.setPreviewCallback(Camera1.this);
                     }
+
+
                     mCallback.onPictureTaken(data);
                 }
             });
+        }
+    }
+    private Bitmap rotateBitmap(Bitmap origin, float alpha) {
+        if (origin == null) {
+            return null;
+        }
+        int width = origin.getWidth();
+        int height = origin.getHeight();
+        Matrix matrix = new Matrix();
+        matrix.setRotate(alpha);
+        // 围绕原地进行旋转
+        Bitmap newBM = Bitmap.createBitmap(origin, 0, 0, width, height, matrix, false);
+        if (newBM.equals(origin)) {
+            return newBM;
+        }
+        origin.recycle();
+        return newBM;
+    }
+
+    private static Bitmap toBitmap(byte[] data) {
+        try {
+            ByteArrayInputStream inputStream = new ByteArrayInputStream(data);
+            Bitmap photo = BitmapFactory.decodeStream(inputStream);
+            inputStream.close();
+            return photo;
+        } catch (IOException e) {
+            throw new IllegalStateException("Will not happen", e);
         }
     }
 
@@ -457,7 +513,8 @@ class Camera1 extends CameraViewImpl implements MediaRecorder.OnInfoListener,
                 mCamera.stopPreview();
                 mIsPreviewActive = false;
             }
-            mCamera.setDisplayOrientation(calcDisplayOrientation(displayOrientation));
+//            mCamera.setDisplayOrientation(calcDisplayOrientation(displayOrientation));
+            mCamera.setDisplayOrientation(270);
             if (needsToStopPreview) {
                 startCameraPreview();
             }
@@ -500,10 +557,10 @@ class Camera1 extends CameraViewImpl implements MediaRecorder.OnInfoListener,
     private void chooseCamera() {
         for (int i = 0, count = Camera.getNumberOfCameras(); i < count; i++) {
             Camera.getCameraInfo(i, mCameraInfo);
-            if (mCameraInfo.facing == mFacing) {
-                mCameraId = i;
+//            if (mCameraInfo.facing == mFacing) {
+                mCameraId = mFacing;
                 return;
-            }
+//            }
         }
         mCameraId = INVALID_CAMERA_ID;
     }
@@ -530,7 +587,15 @@ class Camera1 extends CameraViewImpl implements MediaRecorder.OnInfoListener,
                 mAspectRatio = Constants.DEFAULT_ASPECT_RATIO;
             }
             adjustCameraParameters();
-            mCamera.setDisplayOrientation(calcDisplayOrientation(mDisplayOrientation));
+//            mCamera.setDisplayOrientation(calcDisplayOrientation(mDisplayOrientation));
+
+            if(mCameraId == 0){
+                mCamera.setDisplayOrientation(90);
+            }else{
+                mCamera.setDisplayOrientation(0);
+            }
+
+
             mCallback.onCameraOpened();
             return true;
         } catch (RuntimeException e) {
@@ -565,10 +630,12 @@ class Camera1 extends CameraViewImpl implements MediaRecorder.OnInfoListener,
             mCamera.stopPreview();
             mIsPreviewActive = false;
         }
-        // mCameraParameters.setPreviewSize(size.getWidth(), size.getHeight());
+//         mCameraParameters.setPreviewSize(size.getWidth(), size.getHeight());
         mCameraParameters.setPreviewSize(640, 480);
         mCameraParameters.setPictureSize(mPictureSize.getWidth(), mPictureSize.getHeight());
         mCameraParameters.setRotation(calcCameraRotation(mDisplayOrientation));
+        mCameraParameters.setRotation(90);
+
         setAutoFocusInternal(mAutoFocus);
         setFlashInternal(mFlash);
         setAspectRatio(mAspectRatio);
